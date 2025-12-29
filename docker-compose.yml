@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3005:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src:ro
+    command: npm run dev
+
+  # Backend (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - CHATWORK_API_TOKEN=${CHATWORK_API_TOKEN}
+      - FIRESTORE_EMULATOR_HOST=firestore:8080
+    depends_on:
+      - firestore
+    volumes:
+      - ./backend/app:/app/app:ro
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Firestore Emulator
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    ports:
+      - "8080:8080"
+      - "4000:4000"
+    command: >
+      gcloud emulators firestore start
+      --host-port=0.0.0.0:8080
+      --project=auto-dev-department
+
+volumes:
+  firestore-data:
