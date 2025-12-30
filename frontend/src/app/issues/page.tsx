@@ -12,7 +12,10 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react'
-import { issuesAPI, requirementsAPI, Issue } from '@/lib/api'
+import { issuesAPI, requirementsAPI, Issue, getErrorMessage } from '@/lib/api'
+import { useToast } from '@/components/ui/toast'
+import { ProcessingOverlay } from '@/components/ui/processing-overlay'
+import { useProject } from '@/contexts/project-context'
 
 const painLevelConfig = {
   high: {
@@ -34,26 +37,31 @@ const painLevelConfig = {
 
 export default function IssuesPage() {
   const router = useRouter()
+  const toast = useToast()
+  const { currentProject } = useProject()
   const [issues, setIssues] = useState<Issue[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterPainLevel, setFilterPainLevel] = useState<string>('all')
   const [error, setError] = useState<string | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
 
   const loadIssues = useCallback(async () => {
+    if (!currentProject) return
+
     setIsLoading(true)
     setError(null)
     try {
       const filters = filterPainLevel !== 'all' ? { pain_level: filterPainLevel } : undefined
-      const data = await issuesAPI.list('default', filters)
+      const data = await issuesAPI.list(currentProject.id, filters)
       setIssues(data)
     } catch (err) {
       console.error('Failed to load issues:', err)
-      setError('課題の読み込みに失敗しました')
+      setError(`課題の読み込みに失敗しました: ${getErrorMessage(err)}`)
     } finally {
       setIsLoading(false)
     }
-  }, [filterPainLevel])
+  }, [filterPainLevel, currentProject])
 
   useEffect(() => {
     loadIssues()
@@ -70,9 +78,10 @@ export default function IssuesPage() {
   }
 
   const handleGenerateRequirements = async () => {
-    if (selectedIds.size === 0) return
+    if (selectedIds.size === 0 || !currentProject) return
 
     setError(null)
+    setIsGenerating(true)
     try {
       const ids = Array.from(selectedIds)
 
@@ -82,13 +91,17 @@ export default function IssuesPage() {
       }
 
       // 要件定義を生成
-      const result = await requirementsAPI.generate(ids)
+      const result = await requirementsAPI.generate(ids, currentProject.id)
+
+      toast.success('要件定義を生成しました', '詳細ページで確認してください')
 
       // 要件定義ページへ遷移（生成されたIDを渡す）
       router.push(`/requirements?id=${result.requirement_id}`)
     } catch (err) {
       console.error('Failed to generate requirements:', err)
-      setError('要件定義の生成に失敗しました')
+      toast.error('要件定義の生成に失敗しました', getErrorMessage(err))
+    } finally {
+      setIsGenerating(false)
     }
   }
 
@@ -263,6 +276,17 @@ export default function IssuesPage() {
           })}
         </div>
       )}
+
+      {/* 処理中オーバーレイ */}
+      <ProcessingOverlay
+        isOpen={isGenerating}
+        title="要件定義を生成中..."
+        description="AIが課題を分析して要件定義書を作成しています"
+        steps={[
+          { label: '課題を分析中...', status: isGenerating ? 'active' : 'pending' },
+          { label: '要件定義書を作成中...', status: 'pending' },
+        ]}
+      />
     </div>
   )
 }

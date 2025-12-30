@@ -7,6 +7,14 @@ import os
 from typing import Optional, List, Dict, Any
 import httpx
 from datetime import datetime
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
+
+from app.exceptions import ExternalServiceError, ConfigurationError, RateLimitError
 
 
 class ChatworkService:
@@ -40,15 +48,70 @@ class ChatworkService:
             List of room objects
         """
         if not self.is_configured():
-            raise ValueError("Chatwork API token is not configured")
+            raise ConfigurationError("CHATWORK_API_TOKEN")
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.BASE_URL}/rooms",
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            return response.json()
+        return await self._request_with_retry("GET", "/rooms")
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict] = None,
+        max_retries: int = 3,
+    ) -> Any:
+        """リトライ付きHTTPリクエスト"""
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.request(
+                        method,
+                        f"{self.BASE_URL}{endpoint}",
+                        headers=self._headers(),
+                        params=params,
+                    )
+
+                    # レート制限チェック
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        raise RateLimitError("Chatwork", retry_after)
+
+                    # 204 No Content
+                    if response.status_code == 204:
+                        return []
+
+                    response.raise_for_status()
+                    return response.json()
+
+            except httpx.TimeoutException:
+                last_error = ExternalServiceError(
+                    "Chatwork", "リクエストがタイムアウトしました", retryable=True
+                )
+            except httpx.ConnectError:
+                last_error = ExternalServiceError(
+                    "Chatwork", "接続できませんでした", retryable=True
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500:
+                    last_error = ExternalServiceError(
+                        "Chatwork", f"サーバーエラー ({e.response.status_code})", retryable=True
+                    )
+                else:
+                    raise ExternalServiceError(
+                        "Chatwork", f"APIエラー ({e.response.status_code})", retryable=False
+                    )
+            except RateLimitError:
+                raise
+
+            # リトライ前に待機
+            if attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(2 ** attempt)
+
+        if last_error:
+            raise last_error
+        raise ExternalServiceError("Chatwork", "不明なエラー", retryable=False)
 
     async def get_room_info(self, room_id: str) -> Dict[str, Any]:
         """
@@ -61,15 +124,9 @@ class ChatworkService:
             Room info object
         """
         if not self.is_configured():
-            raise ValueError("Chatwork API token is not configured")
+            raise ConfigurationError("CHATWORK_API_TOKEN")
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.BASE_URL}/rooms/{room_id}",
-                headers=self._headers(),
-            )
-            response.raise_for_status()
-            return response.json()
+        return await self._request_with_retry("GET", f"/rooms/{room_id}")
 
     async def get_messages(
         self,
@@ -87,21 +144,10 @@ class ChatworkService:
             List of message objects
         """
         if not self.is_configured():
-            raise ValueError("Chatwork API token is not configured")
+            raise ConfigurationError("CHATWORK_API_TOKEN")
 
         params = {"force": 1 if force else 0}
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.BASE_URL}/rooms/{room_id}/messages",
-                headers=self._headers(),
-                params=params,
-            )
-            response.raise_for_status()
-            # 空の場合は204が返る
-            if response.status_code == 204:
-                return []
-            return response.json()
+        return await self._request_with_retry("GET", f"/rooms/{room_id}/messages", params)
 
     def format_messages_for_extraction(
         self,

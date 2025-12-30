@@ -14,8 +14,10 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { requirementsAPI, Requirement } from '@/lib/api'
+import { requirementsAPI, Requirement, getErrorMessage, APIError } from '@/lib/api'
+import { useToast } from '@/components/ui/toast'
 import ReactMarkdown from 'react-markdown'
+import { useProject } from '@/contexts/project-context'
 
 const statusConfig = {
   draft: { label: 'ドラフト', className: 'bg-gray-100 text-gray-700' },
@@ -28,6 +30,8 @@ export default function RequirementsPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const targetId = searchParams.get('id')
+  const toast = useToast()
+  const { currentProject } = useProject()
 
   const [requirements, setRequirements] = useState<Requirement[]>([])
   const [selectedReq, setSelectedReq] = useState<Requirement | null>(null)
@@ -39,10 +43,12 @@ export default function RequirementsPage() {
   const [isDeleting, setIsDeleting] = useState(false)
 
   const loadRequirements = useCallback(async () => {
+    if (!currentProject) return
+
     setIsLoading(true)
     setError(null)
     try {
-      const data = await requirementsAPI.list()
+      const data = await requirementsAPI.list(currentProject.id)
       setRequirements(data)
 
       // URLパラメータで指定されたIDがあれば選択
@@ -60,11 +66,11 @@ export default function RequirementsPage() {
       }
     } catch (err) {
       console.error('Failed to load requirements:', err)
-      setError('要件定義の読み込みに失敗しました')
+      setError(`要件定義の読み込みに失敗しました: ${getErrorMessage(err)}`)
     } finally {
       setIsLoading(false)
     }
-  }, [targetId, selectedReq])
+  }, [targetId, selectedReq, currentProject])
 
   // 初回ロード
   useEffect(() => {
@@ -101,9 +107,10 @@ export default function RequirementsPage() {
       setRequirements((prev) =>
         prev.map((r) => (r.id === updated.id ? updated : r))
       )
+      toast.success('要件定義を承認しました', '開発を開始できます')
     } catch (err) {
       console.error('Failed to approve:', err)
-      setError('承認に失敗しました')
+      toast.error('承認に失敗しました', getErrorMessage(err))
     } finally {
       setIsApproving(false)
     }
@@ -125,9 +132,14 @@ export default function RequirementsPage() {
             : r
         )
       )
+      toast.success('GitHub Issueを作成しました')
     } catch (err) {
       console.error('Failed to create GitHub issue:', err)
-      setError('GitHub Issue作成に失敗しました')
+      if (err instanceof APIError && err.errorCode === 'CONFIGURATION_ERROR') {
+        toast.error('設定が必要です', 'GitHub APIの設定が必要です。.envファイルでGITHUB_TOKENとGITHUB_REPOを設定してください。')
+      } else {
+        toast.error('GitHub Issue作成に失敗しました', getErrorMessage(err))
+      }
     } finally {
       setIsCreatingIssue(false)
     }
@@ -142,9 +154,10 @@ export default function RequirementsPage() {
       await requirementsAPI.delete(selectedReq.id)
       setRequirements((prev) => prev.filter((r) => r.id !== selectedReq.id))
       setSelectedReq(null)
+      toast.info('要件定義書を削除しました')
     } catch (err) {
       console.error('Failed to delete:', err)
-      setError('削除に失敗しました')
+      toast.error('削除に失敗しました', getErrorMessage(err))
     } finally {
       setIsDeleting(false)
     }

@@ -39,6 +39,7 @@ import {
   ArrowDown,
 } from 'lucide-react'
 import { issuesAPI, requirementsAPI, sourcesAPI, Issue, Requirement, Source } from '@/lib/api'
+import { useProject } from '@/contexts/project-context'
 
 // カラーパレット（モダンなグラデーション対応）
 const COLORS = {
@@ -68,6 +69,7 @@ type SortOrder = 'asc' | 'desc'
 
 export default function DashboardPage() {
   const router = useRouter()
+  const { currentProject } = useProject()
   const [issues, setIssues] = useState<Issue[]>([])
   const [requirements, setRequirements] = useState<Requirement[]>([])
   const [sources, setSources] = useState<Source[]>([])
@@ -85,13 +87,15 @@ export default function DashboardPage() {
   const [filterPainLevel, setFilterPainLevel] = useState<string>('all')
 
   const loadData = useCallback(async (showLoading = true) => {
+    if (!currentProject) return
+
     if (showLoading) setIsLoading(true)
     setError(null)
     try {
       const [issuesData, requirementsData, sourcesData] = await Promise.all([
-        issuesAPI.list(),
-        requirementsAPI.list(),
-        sourcesAPI.list(),
+        issuesAPI.list(currentProject.id),
+        requirementsAPI.list(currentProject.id),
+        sourcesAPI.list(currentProject.id),
       ])
       setIssues(issuesData)
       setRequirements(requirementsData)
@@ -103,7 +107,7 @@ export default function DashboardPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [currentProject])
 
   // 初回ロード
   useEffect(() => {

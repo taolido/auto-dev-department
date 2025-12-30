@@ -4,6 +4,85 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+// エラーレスポンス型
+export interface APIErrorResponse {
+  error: boolean
+  error_code: string
+  message: string
+  details?: Record<string, unknown>
+}
+
+// カスタムエラークラス
+export class APIError extends Error {
+  public readonly errorCode: string
+  public readonly statusCode: number
+  public readonly details: Record<string, unknown>
+  public readonly retryable: boolean
+
+  constructor(
+    message: string,
+    errorCode: string,
+    statusCode: number,
+    details: Record<string, unknown> = {}
+  ) {
+    super(message)
+    this.name = 'APIError'
+    this.errorCode = errorCode
+    this.statusCode = statusCode
+    this.details = details
+    this.retryable = statusCode >= 500 || statusCode === 429
+  }
+
+  static fromResponse(response: APIErrorResponse, statusCode: number): APIError {
+    return new APIError(
+      response.message,
+      response.error_code,
+      statusCode,
+      response.details || {}
+    )
+  }
+}
+
+// エラーメッセージのマッピング
+const ERROR_MESSAGES: Record<string, string> = {
+  CONFIGURATION_ERROR: '設定が必要です',
+  EXTERNAL_SERVICE_ERROR: '外部サービスでエラーが発生しました',
+  RATE_LIMIT_ERROR: 'リクエスト制限に達しました。しばらく待ってから再試行してください',
+  VALIDATION_ERROR: '入力内容に問題があります',
+  NOT_FOUND: 'リソースが見つかりません',
+  AI_GENERATION_ERROR: 'AI処理中にエラーが発生しました',
+  INTERNAL_ERROR: 'サーバー内部エラーが発生しました',
+}
+
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof APIError) {
+    return ERROR_MESSAGES[error.errorCode] || error.message
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return '不明なエラーが発生しました'
+}
+
+// Project Types
+export interface Project {
+  id: string
+  name: string
+  description?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectCreate {
+  name: string
+  description?: string
+}
+
+export interface ProjectUpdate {
+  name?: string
+  description?: string
+}
+
 // Types
 export interface Source {
   id: string
@@ -77,20 +156,99 @@ export interface GenerateResponse {
 }
 
 // API Functions
-async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  })
+interface FetchOptions extends RequestInit {
+  maxRetries?: number
+  timeout?: number
+}
 
-  if (!res.ok) {
-    throw new Error(`API Error: ${res.status} ${res.statusText}`)
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function fetchAPI<T>(
+  endpoint: string,
+  options?: FetchOptions
+): Promise<T> {
+  const { maxRetries = 3, timeout = 30000, ...fetchOptions } = options || {}
+
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        ...fetchOptions,
+        headers: {
+          'Content-Type': 'application/json',
+          ...fetchOptions?.headers,
+        },
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      if (!res.ok) {
+        // エラーレスポンスをパース
+        let errorData: APIErrorResponse | null = null
+        try {
+          errorData = await res.json()
+        } catch {
+          // JSONパースに失敗した場合は汎用エラー
+        }
+
+        if (errorData?.error) {
+          const apiError = APIError.fromResponse(errorData, res.status)
+          // 5xx or 429 はリトライ可能
+          if (apiError.retryable && attempt < maxRetries - 1) {
+            lastError = apiError
+            await sleep(Math.pow(2, attempt) * 1000)
+            continue
+          }
+          throw apiError
+        }
+
+        throw new APIError(
+          `API Error: ${res.status} ${res.statusText}`,
+          'UNKNOWN_ERROR',
+          res.status
+        )
+      }
+
+      return res.json()
+    } catch (error) {
+      if (error instanceof APIError) {
+        throw error
+      }
+
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          lastError = new APIError(
+            'リクエストがタイムアウトしました',
+            'TIMEOUT_ERROR',
+            408
+          )
+        } else if (error.message.includes('fetch')) {
+          lastError = new APIError(
+            'サーバーに接続できません',
+            'NETWORK_ERROR',
+            0
+          )
+        } else {
+          lastError = error
+        }
+      }
+
+      // リトライ
+      if (attempt < maxRetries - 1) {
+        await sleep(Math.pow(2, attempt) * 1000)
+        continue
+      }
+    }
   }
 
-  return res.json()
+  throw lastError || new APIError('不明なエラー', 'UNKNOWN_ERROR', 500)
 }
 
 // Chatwork Types
@@ -363,4 +521,30 @@ export const statsAPI = {
       developments: developments.length,
     }
   },
+}
+
+// Projects API
+export const projectsAPI = {
+  list: () =>
+    fetchAPI<Project[]>('/api/projects/'),
+
+  get: (projectId: string) =>
+    fetchAPI<Project>(`/api/projects/${projectId}`),
+
+  create: (data: ProjectCreate) =>
+    fetchAPI<Project>('/api/projects/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (projectId: string, data: ProjectUpdate) =>
+    fetchAPI<Project>(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (projectId: string) =>
+    fetchAPI<{ status: string; id: string }>(`/api/projects/${projectId}`, {
+      method: 'DELETE',
+    }),
 }

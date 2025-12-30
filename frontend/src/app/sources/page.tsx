@@ -2,9 +2,14 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { Upload, MessageSquare, FileText, Plus, Trash2, Loader2, Sparkles, RefreshCw, AlertCircle } from 'lucide-react'
-import { sourcesAPI, issuesAPI, Source, ChatworkStatus } from '@/lib/api'
+import { sourcesAPI, issuesAPI, Source, ChatworkStatus, getErrorMessage, APIError } from '@/lib/api'
+import { useToast } from '@/components/ui/toast'
+import { ProcessingOverlay } from '@/components/ui/processing-overlay'
+import { useProject } from '@/contexts/project-context'
 
 export default function SourcesPage() {
+  const toast = useToast()
+  const { currentProject } = useProject()
   const [sources, setSources] = useState<Source[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isUploading, setIsUploading] = useState(false)
@@ -15,18 +20,22 @@ export default function SourcesPage() {
   const [uploadedContent, setUploadedContent] = useState<Map<string, string>>(new Map())
   const [chatworkStatus, setChatworkStatus] = useState<ChatworkStatus | null>(null)
   const [isFetchingMessages, setIsFetchingMessages] = useState<string | null>(null)
+  const [processingSteps, setProcessingSteps] = useState<{label: string; status: 'pending' | 'active' | 'completed'}[]>([])
 
   const loadSources = useCallback(async () => {
+    if (!currentProject) return
+
     try {
-      const data = await sourcesAPI.list()
+      const data = await sourcesAPI.list(currentProject.id)
       setSources(data)
+      setError(null)
     } catch (err) {
       console.error('Failed to load sources:', err)
-      setError('ソースの読み込みに失敗しました')
+      setError(`ソースの読み込みに失敗しました: ${getErrorMessage(err)}`)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [currentProject])
 
   useEffect(() => {
     loadSources()
@@ -38,7 +47,7 @@ export default function SourcesPage() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file || !currentProject) return
 
     setIsUploading(true)
     setError(null)
@@ -47,14 +56,14 @@ export default function SourcesPage() {
       // ファイルの内容を読み取って保存
       const content = await file.text()
 
-      const newSource = await sourcesAPI.upload(file)
+      const newSource = await sourcesAPI.upload(file, undefined, currentProject.id)
       setSources([...sources, newSource])
 
       // 内容を保存（抽出時に使用）
       setUploadedContent(prev => new Map(prev).set(newSource.id, content))
     } catch (err) {
       console.error('Upload failed:', err)
-      setError('ファイルのアップロードに失敗しました')
+      setError(`ファイルのアップロードに失敗しました: ${getErrorMessage(err)}`)
     } finally {
       setIsUploading(false)
       e.target.value = ''
@@ -62,20 +71,21 @@ export default function SourcesPage() {
   }
 
   const handleChatworkConnect = async () => {
-    if (!chatworkRoomId.trim()) return
+    if (!chatworkRoomId.trim() || !currentProject) return
 
     setError(null)
     try {
       const newSource = await sourcesAPI.connectChatwork(
         chatworkRoomId,
-        chatworkRoomName || undefined
+        chatworkRoomName || undefined,
+        currentProject.id
       )
       setSources([...sources, newSource])
       setChatworkRoomId('')
       setChatworkRoomName('')
     } catch (err) {
       console.error('Chatwork connect failed:', err)
-      setError('Chatwork連携に失敗しました')
+      setError(`Chatwork連携に失敗しました: ${getErrorMessage(err)}`)
     }
   }
 
@@ -90,7 +100,7 @@ export default function SourcesPage() {
       })
     } catch (err) {
       console.error('Delete failed:', err)
-      setError('削除に失敗しました')
+      setError(`削除に失敗しました: ${getErrorMessage(err)}`)
     }
   }
 
@@ -106,40 +116,69 @@ export default function SourcesPage() {
       setSources(prev => prev.map(s =>
         s.id === sourceId ? { ...s, message_count: response.message_count } : s
       ))
-      alert(`${response.message_count}件のメッセージを取得しました。「課題抽出」ボタンで分析を開始できます。`)
+      toast.success(
+        'メッセージ取得完了',
+        `${response.message_count}件のメッセージを取得しました。「課題抽出」ボタンで分析を開始できます。`
+      )
     } catch (err) {
       console.error('Fetch messages failed:', err)
-      setError('メッセージの取得に失敗しました。Chatwork API設定を確認してください。')
+      const errorMsg = getErrorMessage(err)
+      if (err instanceof APIError && err.errorCode === 'CONFIGURATION_ERROR') {
+        setError('Chatwork APIの設定が必要です。.envファイルでCHATWORK_API_TOKENを設定してください。')
+      } else {
+        setError(`メッセージの取得に失敗しました: ${errorMsg}`)
+      }
     } finally {
       setIsFetchingMessages(null)
     }
   }
 
   const handleExtract = async (sourceId: string) => {
+    if (!currentProject) return
+
     const content = uploadedContent.get(sourceId)
     if (!content) {
       // Chatworkソースの場合はまずメッセージを取得
       const source = sources.find(s => s.id === sourceId)
       if (source?.type === 'chatwork_room') {
-        setError('まず「メッセージ取得」ボタンでメッセージを取得してください。')
+        toast.warning('メッセージ取得が必要', 'まず「メッセージ取得」ボタンでメッセージを取得してください。')
       } else {
-        setError('ファイルの内容が見つかりません。再度アップロードしてください。')
+        toast.warning('再アップロードが必要', 'ファイルの内容が見つかりません。再度アップロードしてください。')
       }
       return
     }
 
     setIsExtracting(sourceId)
     setError(null)
+    setProcessingSteps([
+      { label: 'ログデータを分析中...', status: 'active' },
+      { label: 'AIで課題を抽出中...', status: 'pending' },
+      { label: '結果を保存中...', status: 'pending' },
+    ])
 
     try {
-      await issuesAPI.extract(sourceId, content)
-      // 抽出開始をユーザーに通知
-      alert('課題抽出を開始しました。「課題リスト」ページで結果を確認してください。')
+      // ステップを進める（シミュレーション）
+      setTimeout(() => {
+        setProcessingSteps(prev => prev.map((s, i) =>
+          i === 0 ? { ...s, status: 'completed' } :
+          i === 1 ? { ...s, status: 'active' } : s
+        ))
+      }, 1000)
+
+      await issuesAPI.extract(sourceId, content, currentProject.id)
+
+      setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'completed' })))
+
+      toast.success(
+        '課題抽出完了',
+        '「課題リスト」ページで結果を確認してください。'
+      )
     } catch (err) {
       console.error('Extract failed:', err)
-      setError('課題抽出に失敗しました')
+      toast.error('課題抽出に失敗しました', getErrorMessage(err))
     } finally {
       setIsExtracting(null)
+      setProcessingSteps([])
     }
   }
 
@@ -337,6 +376,14 @@ export default function SourcesPage() {
           </div>
         )}
       </div>
+
+      {/* 処理中オーバーレイ */}
+      <ProcessingOverlay
+        isOpen={isExtracting !== null}
+        title="課題を抽出中..."
+        description="AIがログを分析して課題を抽出しています"
+        steps={processingSteps}
+      />
     </div>
   )
 }

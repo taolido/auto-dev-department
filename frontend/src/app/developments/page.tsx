@@ -22,7 +22,10 @@ import {
   Check,
   Download,
 } from 'lucide-react'
-import { developmentsAPI, requirementsAPI, Development, Requirement, GitHubStatus } from '@/lib/api'
+import { developmentsAPI, requirementsAPI, Development, Requirement, GitHubStatus, getErrorMessage, APIError } from '@/lib/api'
+import { useToast } from '@/components/ui/toast'
+import { ProcessingOverlay } from '@/components/ui/processing-overlay'
+import { useProject } from '@/contexts/project-context'
 
 const statusConfig = {
   designing: {
@@ -81,6 +84,8 @@ const agentLabels: Record<string, string> = {
 
 export default function DevelopmentsPage() {
   const router = useRouter()
+  const toast = useToast()
+  const { currentProject } = useProject()
   const [developments, setDevelopments] = useState<Development[]>([])
   const [requirements, setRequirements] = useState<Requirement[]>([])
   const [selectedDev, setSelectedDev] = useState<Development | null>(null)
@@ -95,10 +100,12 @@ export default function DevelopmentsPage() {
   const [copied, setCopied] = useState(false)
 
   const loadData = useCallback(async () => {
+    if (!currentProject) return
+
     try {
       const [devsData, reqsData] = await Promise.all([
-        developmentsAPI.list(),
-        requirementsAPI.list(),
+        developmentsAPI.list(currentProject.id),
+        requirementsAPI.list(currentProject.id),
       ])
       setDevelopments(devsData)
       setRequirements(reqsData.filter(r => r.status === 'approved'))
@@ -114,11 +121,11 @@ export default function DevelopmentsPage() {
       }
     } catch (err) {
       console.error('Failed to load developments:', err)
-      setError('データの読み込みに失敗しました')
+      setError(`データの読み込みに失敗しました: ${getErrorMessage(err)}`)
     } finally {
       setIsLoading(false)
     }
-  }, [selectedDev])
+  }, [selectedDev, currentProject])
 
   useEffect(() => {
     loadData()
@@ -140,21 +147,22 @@ export default function DevelopmentsPage() {
   }, [autoRefresh, loadData])
 
   const handleStartDevelopment = async () => {
-    if (!selectedReqId) return
+    if (!selectedReqId || !currentProject) return
 
     setIsStarting(true)
     setError(null)
 
     try {
-      const result = await developmentsAPI.start(selectedReqId)
+      const result = await developmentsAPI.start(selectedReqId, currentProject.id)
       // 新しい開発の詳細を取得
       const newDev = await developmentsAPI.get(result.development_id)
       setDevelopments(prev => [newDev, ...prev])
       setSelectedDev(newDev)
       setSelectedReqId('')
+      toast.success('開発を開始しました', 'AIエージェントが自動的にコードを生成します')
     } catch (err) {
       console.error('Failed to start development:', err)
-      setError('開発の開始に失敗しました')
+      toast.error('開発の開始に失敗しました', getErrorMessage(err))
     } finally {
       setIsStarting(false)
     }
@@ -173,13 +181,19 @@ export default function DevelopmentsPage() {
       setSelectedDev(updatedDev)
       setDevelopments(prev => prev.map(d => d.id === updatedDev.id ? updatedDev : d))
 
+      toast.success('PRを作成しました', 'GitHubでPRを確認してください')
+
       // PRのURLを新しいタブで開く
       if (result.pr_url) {
         window.open(result.pr_url, '_blank')
       }
     } catch (err) {
       console.error('Failed to create PR:', err)
-      setError('PRの作成に失敗しました。GitHub連携設定を確認してください。')
+      if (err instanceof APIError && err.errorCode === 'CONFIGURATION_ERROR') {
+        toast.error('設定が必要です', 'GitHub APIの設定が必要です。.envファイルでGITHUB_TOKENとGITHUB_REPOを設定してください。')
+      } else {
+        toast.error('PRの作成に失敗しました', getErrorMessage(err))
+      }
     } finally {
       setIsCreatingPR(false)
     }
@@ -189,9 +203,11 @@ export default function DevelopmentsPage() {
     try {
       await navigator.clipboard.writeText(content)
       setCopied(true)
+      toast.success('コピーしました')
       setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error('Failed to copy:', err)
+      toast.error('コピーに失敗しました')
     }
   }
 

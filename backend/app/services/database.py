@@ -60,6 +60,52 @@ class FirestoreDB:
                         value[k] = v.replace(tzinfo=None)
         return model_class(**doc_data)
 
+    # ========== Projects Collection ==========
+
+    def get_projects_collection(self):
+        return self.db.collection('projects')
+
+    async def create_project(self, project: BaseModel) -> BaseModel:
+        """プロジェクトを作成"""
+        data = self._serialize(project)
+        self.get_projects_collection().document(project.id).set(data)
+        return project
+
+    async def get_project(self, project_id: str) -> Optional[Dict]:
+        """プロジェクトを取得"""
+        doc = self.get_projects_collection().document(project_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+
+    async def list_projects(self) -> List[Dict]:
+        """プロジェクト一覧を取得"""
+        docs = self.get_projects_collection().order_by('created_at', direction=firestore.Query.DESCENDING).stream()
+        return [doc.to_dict() for doc in docs]
+
+    async def update_project(self, project_id: str, updates: Dict[str, Any]) -> Optional[Dict]:
+        """プロジェクトを更新"""
+        doc_ref = self.get_projects_collection().document(project_id)
+        doc_ref.update(updates)
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+
+    async def delete_project(self, project_id: str) -> bool:
+        """プロジェクトを削除"""
+        self.get_projects_collection().document(project_id).delete()
+        return True
+
+    async def update_source(self, source_id: str, updates: Dict[str, Any]) -> Optional[Dict]:
+        """ソースを更新"""
+        doc_ref = self.get_sources_collection().document(source_id)
+        doc_ref.update(updates)
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+
     # ========== Sources Collection ==========
 
     def get_sources_collection(self):
