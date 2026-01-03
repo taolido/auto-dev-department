@@ -244,7 +244,7 @@ export function Sidebar() {
             </div>
             <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
               <Zap className="h-3 w-3 text-amber-400" />
-              <span>Gemini 2.0 Flash 搭載</span>
+              <span>gemini-3-flash-preview</span>
             </div>
           </div>
         </div>
