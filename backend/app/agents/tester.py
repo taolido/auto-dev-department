@@ -42,7 +42,7 @@ class TesterAgent:
     def __init__(self, api_key: str = None):
         if api_key:
             genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        self.model = genai.GenerativeModel("gemini-3-flash-preview")
 
     async def test_and_fix(
         self,

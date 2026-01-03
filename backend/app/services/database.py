@@ -274,5 +274,119 @@ class FirestoreDB:
         return None
 
 
+    # ========== Messages Collection ==========
+
+    def get_messages_collection(self):
+        return self.db.collection('messages')
+
+    async def save_message(self, message: BaseModel) -> BaseModel:
+        """メッセージを保存（重複チェック付き）"""
+        # message.id は Chatwork の message_id を使用
+        doc_ref = self.get_messages_collection().document(message.id)
+        doc = doc_ref.get()
+
+        # 既存なら何もしない（重複排除）
+        if doc.exists:
+            return message
+
+        data = self._serialize(message)
+        doc_ref.set(data)
+        return message
+
+    async def save_messages_batch(self, messages: List[BaseModel]) -> int:
+        """メッセージを一括保存（重複排除）"""
+        batch = self.db.batch()
+        saved_count = 0
+
+        for message in messages:
+            doc_ref = self.get_messages_collection().document(message.id)
+            doc = doc_ref.get()
+
+            if not doc.exists:
+                data = self._serialize(message)
+                batch.set(doc_ref, data)
+                saved_count += 1
+
+        if saved_count > 0:
+            batch.commit()
+
+        return saved_count
+
+    async def get_messages_by_source(
+        self,
+        source_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict]:
+        """ソース別メッセージを取得（新しい順）"""
+        query = (
+            self.get_messages_collection()
+            .where('source_id', '==', source_id)
+            .order_by('send_time', direction=firestore.Query.DESCENDING)
+            .limit(limit)
+            .offset(offset)
+        )
+        docs = query.stream()
+        return [doc.to_dict() for doc in docs]
+
+    async def get_messages_by_room(
+        self,
+        room_id: str,
+        since: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """ルーム別メッセージを取得"""
+        query = self.get_messages_collection().where('room_id', '==', room_id)
+
+        if since:
+            query = query.where('send_time', '>', since)
+
+        query = query.order_by('send_time', direction=firestore.Query.DESCENDING).limit(limit)
+        docs = query.stream()
+        return [doc.to_dict() for doc in docs]
+
+    async def get_message_count_by_source(self, source_id: str) -> int:
+        """ソース別メッセージ数を取得"""
+        docs = self.get_messages_collection().where('source_id', '==', source_id).stream()
+        return sum(1 for _ in docs)
+
+    async def get_latest_message_id(self, source_id: str) -> Optional[str]:
+        """ソースの最新メッセージIDを取得"""
+        query = (
+            self.get_messages_collection()
+            .where('source_id', '==', source_id)
+            .order_by('send_time', direction=firestore.Query.DESCENDING)
+            .limit(1)
+        )
+        docs = list(query.stream())
+        if docs:
+            return docs[0].to_dict().get('id')
+        return None
+
+    # ========== Sync Status Collection ==========
+
+    def get_sync_status_collection(self):
+        return self.db.collection('sync_status')
+
+    async def get_sync_status(self, source_id: str) -> Optional[Dict]:
+        """同期状態を取得"""
+        doc = self.get_sync_status_collection().document(source_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+
+    async def update_sync_status(self, source_id: str, updates: Dict[str, Any]) -> Dict:
+        """同期状態を更新"""
+        doc_ref = self.get_sync_status_collection().document(source_id)
+        doc = doc_ref.get()
+
+        if doc.exists:
+            doc_ref.update(updates)
+        else:
+            doc_ref.set(updates)
+
+        return doc_ref.get().to_dict()
+
+
 # シングルトンインスタンス
 db = FirestoreDB()

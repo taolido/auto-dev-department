@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { Upload, MessageSquare, FileText, Plus, Trash2, Loader2, Sparkles, RefreshCw, AlertCircle } from 'lucide-react'
-import { sourcesAPI, issuesAPI, Source, ChatworkStatus, getErrorMessage, APIError } from '@/lib/api'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Upload, MessageSquare, FileText, Plus, Trash2, Loader2, Sparkles, RefreshCw, AlertCircle, Check } from 'lucide-react'
+import { sourcesAPI, issuesAPI, Source, ChatworkStatus, ChatworkRoomInfo, getErrorMessage, APIError } from '@/lib/api'
 import { useToast } from '@/components/ui/toast'
 import { ProcessingOverlay } from '@/components/ui/processing-overlay'
 import { useProject } from '@/contexts/project-context'
@@ -16,11 +16,53 @@ export default function SourcesPage() {
   const [isExtracting, setIsExtracting] = useState<string | null>(null)
   const [chatworkRoomId, setChatworkRoomId] = useState('')
   const [chatworkRoomName, setChatworkRoomName] = useState('')
+  const [fetchedRoomInfo, setFetchedRoomInfo] = useState<ChatworkRoomInfo | null>(null)
+  const [isFetchingRoomInfo, setIsFetchingRoomInfo] = useState(false)
+  const [roomIdError, setRoomIdError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [uploadedContent, setUploadedContent] = useState<Map<string, string>>(new Map())
   const [chatworkStatus, setChatworkStatus] = useState<ChatworkStatus | null>(null)
   const [isFetchingMessages, setIsFetchingMessages] = useState<string | null>(null)
   const [processingSteps, setProcessingSteps] = useState<{label: string; status: 'pending' | 'active' | 'completed'}[]>([])
+  const debounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  // ルームID変更時に自動で部屋情報を取得
+  useEffect(() => {
+    // 前回のタイマーをクリア
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+    }
+
+    // リセット
+    setFetchedRoomInfo(null)
+    setRoomIdError(null)
+
+    // IDが空なら何もしない
+    if (!chatworkRoomId.trim() || !chatworkStatus?.configured) {
+      return
+    }
+
+    // デバウンス: 500ms後に取得
+    debounceRef.current = setTimeout(async () => {
+      setIsFetchingRoomInfo(true)
+      try {
+        const info = await sourcesAPI.getChatworkRoomInfo(chatworkRoomId.trim())
+        setFetchedRoomInfo(info)
+        setRoomIdError(null)
+      } catch (err) {
+        setFetchedRoomInfo(null)
+        setRoomIdError('ルームが見つかりません')
+      } finally {
+        setIsFetchingRoomInfo(false)
+      }
+    }, 500)
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+      }
+    }
+  }, [chatworkRoomId, chatworkStatus?.configured])
 
   const loadSources = useCallback(async () => {
     if (!currentProject) return
@@ -75,14 +117,18 @@ export default function SourcesPage() {
 
     setError(null)
     try {
+      // カスタム名がなければ取得した部屋名を使用
+      const roomName = chatworkRoomName.trim() || fetchedRoomInfo?.name || undefined
       const newSource = await sourcesAPI.connectChatwork(
         chatworkRoomId,
-        chatworkRoomName || undefined,
+        roomName,
         currentProject.id
       )
       setSources([...sources, newSource])
       setChatworkRoomId('')
       setChatworkRoomName('')
+      setFetchedRoomInfo(null)
+      toast.success('ルーム連携完了', `「${newSource.label}」を登録しました`)
     } catch (err) {
       console.error('Chatwork connect failed:', err)
       setError(`Chatwork連携に失敗しました: ${getErrorMessage(err)}`)
@@ -271,27 +317,59 @@ export default function SourcesPage() {
           )}
 
           <div className="mt-4 space-y-3">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="ルームID（例: 123456789）"
+                value={chatworkRoomId}
+                onChange={(e) => setChatworkRoomId(e.target.value)}
+                className={`w-full rounded-lg border bg-background px-4 py-2 text-sm ${
+                  roomIdError ? 'border-red-500' : fetchedRoomInfo ? 'border-green-500' : ''
+                }`}
+              />
+              {isFetchingRoomInfo && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              )}
+              {fetchedRoomInfo && !isFetchingRoomInfo && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <Check className="h-4 w-4 text-green-500" />
+                </div>
+              )}
+            </div>
+
+            {/* 取得したルーム情報を表示 */}
+            {fetchedRoomInfo && (
+              <div className="rounded-lg bg-green-50 p-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-green-600" />
+                  <span className="font-medium text-green-800">{fetchedRoomInfo.name}</span>
+                </div>
+                <p className="mt-1 text-xs text-green-700">
+                  {fetchedRoomInfo.type} • {fetchedRoomInfo.message_num}件のメッセージ
+                </p>
+              </div>
+            )}
+
+            {roomIdError && (
+              <div className="text-sm text-red-500">{roomIdError}</div>
+            )}
+
             <input
               type="text"
-              placeholder="ルームID（例: 123456789）"
-              value={chatworkRoomId}
-              onChange={(e) => setChatworkRoomId(e.target.value)}
-              className="w-full rounded-lg border bg-background px-4 py-2 text-sm"
-            />
-            <input
-              type="text"
-              placeholder="ルーム名（任意）"
+              placeholder="カスタム名（空欄で自動取得した名前を使用）"
               value={chatworkRoomName}
               onChange={(e) => setChatworkRoomName(e.target.value)}
               className="w-full rounded-lg border bg-background px-4 py-2 text-sm"
             />
             <button
               onClick={handleChatworkConnect}
-              disabled={!chatworkRoomId.trim()}
+              disabled={!chatworkRoomId.trim() || !!roomIdError || isFetchingRoomInfo}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
-              連携する
+              {fetchedRoomInfo ? `「${chatworkRoomName || fetchedRoomInfo.name}」を連携` : '連携する'}
             </button>
           </div>
         </div>

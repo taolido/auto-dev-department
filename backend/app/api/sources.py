@@ -43,6 +43,31 @@ async def get_chatwork_rooms():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/chatwork/rooms/{room_id}")
+async def get_chatwork_room_info(room_id: str):
+    """ルームIDから部屋情報を取得（登録前のプレビュー用）"""
+    if not chatwork_service.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Chatwork連携が設定されていません"
+        )
+
+    try:
+        room_info = await chatwork_service.get_room_info(room_id)
+        return {
+            "room_id": room_id,
+            "name": room_info.get("name"),
+            "type": room_info.get("type"),
+            "message_num": room_info.get("message_num", 0),
+            "icon_path": room_info.get("icon_path"),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"ルームが見つかりません（ID: {room_id}）"
+        )
+
+
 @router.get("/", response_model=List[Source])
 async def list_sources(project_id: str = "default"):
     """ソース一覧を取得"""
@@ -142,7 +167,11 @@ async def get_source_messages(source_id: str, force: bool = True):
         raise HTTPException(status_code=400, detail="Chatwork room info not found")
 
     try:
-        room_id = source.chatwork.get("room_id")
+        # ChatworkInfoオブジェクトまたはdictに対応
+        if isinstance(source.chatwork, dict):
+            room_id = source.chatwork.get("room_id")
+        else:
+            room_id = source.chatwork.room_id
         messages = await chatwork_service.get_messages(room_id, force=force)
 
         # メッセージ数を更新
@@ -162,6 +191,49 @@ async def get_source_messages(source_id: str, force: bool = True):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{source_id}/stored-messages")
+async def get_stored_messages(
+    source_id: str,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Firestoreに蓄積されたメッセージを取得"""
+    source_data = await db.get_source(source_id)
+    if not source_data:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    source = Source(**source_data)
+
+    if source.type != SourceType.CHATWORK_ROOM:
+        raise HTTPException(status_code=400, detail="This source is not a Chatwork room")
+
+    # Firestoreから蓄積メッセージを取得
+    messages = await db.get_messages_by_source(source_id, limit=limit, offset=offset)
+    total_count = await db.get_message_count_by_source(source_id)
+
+    # 課題抽出用のフォーマットに変換
+    formatted_lines = []
+    for msg in messages:
+        send_time = msg.get("send_time")
+        if hasattr(send_time, "strftime"):
+            date_str = send_time.strftime("%Y-%m-%d %H:%M")
+        else:
+            date_str = str(send_time)
+
+        formatted_lines.append(f"[{date_str}] {msg.get('account_name', 'Unknown')}:")
+        formatted_lines.append(msg.get("body", ""))
+        formatted_lines.append("")
+
+    return {
+        "source_id": source_id,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
+        "messages": messages,
+        "content": "\n".join(formatted_lines),
+    }
 
 
 @router.delete("/{source_id}")

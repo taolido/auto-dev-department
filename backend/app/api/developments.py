@@ -119,6 +119,13 @@ async def create_pull_request(development_id: str):
 
     dev = Development(**dev_data)
 
+    # 既にPRが作成されている場合は重複を防止
+    if dev.github_pr_url:
+        raise HTTPException(
+            status_code=400,
+            detail=f"PRは既に作成されています: {dev.github_pr_url}"
+        )
+
     # 生成ファイルがない場合
     if not dev.generated_files:
         raise HTTPException(status_code=400, detail="生成されたファイルがありません")

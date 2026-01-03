@@ -9,8 +9,10 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import traceback
 
-from app.api import sources, issues, requirements, developments, projects
+from app.api import sources, issues, requirements, developments, projects, polling
 from app.services.database import db
+from app.services.polling_service import polling_service
+from app.services.chatwork_service import chatwork_service
 from app.exceptions import AppException
 
 
@@ -28,9 +30,24 @@ async def lifespan(app: FastAPI):
         print(f"Firestore connection warning: {e}")
         print("Continuing with Firestore (may use emulator)...")
 
+    # Chatwork Polling自動開始（設定されていれば）
+    if chatwork_service.is_configured():
+        try:
+            await polling_service.start()
+            print("Chatwork polling service started (60s interval)")
+        except Exception as e:
+            print(f"Failed to start polling service: {e}")
+    else:
+        print("Chatwork not configured - polling disabled")
+
     yield
+
     # Shutdown
     print("Auto-Dev Department Backend shutting down...")
+    # Polling停止
+    if polling_service.is_running:
+        await polling_service.stop()
+        print("Polling service stopped")
 
 
 app = FastAPI(
@@ -86,6 +103,7 @@ app.include_router(sources.router, prefix="/api/sources", tags=["Sources"])
 app.include_router(issues.router, prefix="/api/issues", tags=["Issues"])
 app.include_router(requirements.router, prefix="/api/requirements", tags=["Requirements"])
 app.include_router(developments.router, prefix="/api/developments", tags=["Developments"])
+app.include_router(polling.router, prefix="/api/polling", tags=["Polling"])
 
 
 @app.get("/")

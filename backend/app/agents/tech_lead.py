@@ -43,7 +43,7 @@ class TechLeadAgent:
     def __init__(self, api_key: str = None):
         if api_key:
             genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        self.model = genai.GenerativeModel("gemini-3-flash-preview")
 
     async def design(self, requirement: str) -> Dict[str, Any]:
         """要件から設計書を生成"""

@@ -265,6 +265,14 @@ export interface ChatworkRoom {
   mention_num: number
 }
 
+export interface ChatworkRoomInfo {
+  room_id: string
+  name: string
+  type: string
+  message_num: number
+  icon_path?: string
+}
+
 export interface SourceMessagesResponse {
   source_id: string
   message_count: number
@@ -308,6 +316,9 @@ export const sourcesAPI = {
 
   getChatworkRooms: () =>
     fetchAPI<{ rooms: ChatworkRoom[] }>('/api/sources/chatwork/rooms'),
+
+  getChatworkRoomInfo: (roomId: string) =>
+    fetchAPI<ChatworkRoomInfo>(`/api/sources/chatwork/rooms/${roomId}`),
 
   connectChatwork: (roomId: string, roomName?: string, projectId = 'default') =>
     fetchAPI<Source>('/api/sources/chatwork', {
